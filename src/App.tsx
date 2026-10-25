@@ -1,6 +1,8 @@
 import {
   useCallback,
+  useMemo,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
@@ -13,12 +15,10 @@ import {
   Check,
   ChevronDown,
   Crop,
-  Expand,
   ImagePlus,
   Info,
   LoaderCircle,
   Maximize,
-  Music2,
   Pause,
   Play,
   RotateCcw,
@@ -35,15 +35,17 @@ import {
   fonts,
   formatTime,
   render,
+  textLayout,
   type Edit,
   type FontId,
   type Media,
   type Ratio,
   type TextBox,
 } from "./editor";
-import waveform from "./waveform.json";
+import { flushSync } from "react-dom";
+import AudioTimeline from "./AudioTimeline";
 
-type Tab = "text" | "frame" | "audio";
+type Tab = "text" | "frame";
 type InstallEvent = Event & {
   prompt(): Promise<void>;
   userChoice: Promise<{ outcome: string }>;
@@ -107,6 +109,9 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [editingCaption, setEditingCaption] = useState(false);
+  const [canvasDisplay, setCanvasDisplay] = useState({ width: 0, height: 0 });
+  const captionRef = useRef<HTMLTextAreaElement>(null);
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0);
   const [songDuration, setSongDuration] = useState(256.05);
@@ -140,6 +145,7 @@ export default function App() {
     y: number;
     edit: Edit;
     box: TextBox;
+    moved: boolean;
   } | null>(null);
   const duration = durationOf(edit, media),
     size = dimensions(edit, media);
@@ -148,6 +154,24 @@ export default function App() {
     ph = Math.round(size.height * previewScale);
   const video =
     sourceRef.current instanceof HTMLVideoElement ? sourceRef.current : null;
+
+  const captionBox = useMemo(() => {
+    const ctx = canvasRef.current?.getContext("2d");
+    return ctx ? textLayout(ctx, pw, ph, edit) : null;
+  }, [edit, pw, ph, fontsReady, media]);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const observer = new ResizeObserver(() => {
+      const rect = canvas.getBoundingClientRect();
+      setCanvasDisplay({ width: rect.width, height: rect.height });
+    });
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, []);
+  useLayoutEffect(() => {
+    if (captionRef.current) captionRef.current.scrollTop = 0;
+  }, [captionBox, editingCaption]);
 
   const stop = useCallback(() => {
     playingRef.current = false;
@@ -260,7 +284,8 @@ export default function App() {
         media?.height || 1920,
         edit,
         dragging,
-        tab === "text" && !busy,
+        tab === "text" && !busy && !editingCaption,
+        editingCaption,
       );
       if (playingRef.current) {
         const source = sourceRef.current;
@@ -305,6 +330,7 @@ export default function App() {
     media,
     playing,
     dragging,
+    editingCaption,
     tab,
     busy,
     fontsReady,
@@ -329,6 +355,7 @@ export default function App() {
       setError("Choose a photo (JPG, PNG, WebP) or a video (MP4, MOV, WebM).");
       return;
     }
+    setEditingCaption(false);
     const id = ++loadId.current;
     stop();
     setLoading(true);
@@ -511,8 +538,7 @@ export default function App() {
     if (!kind) return;
     stop();
     event.currentTarget.setPointerCapture(event.pointerId);
-    pointerRef.current = { kind, ...p, edit: { ...edit }, box };
-    setDragging(true);
+    pointerRef.current = { kind, ...p, edit: { ...edit }, box, moved: false };
   }
   function pointerMove(event: ReactPointerEvent<HTMLCanvasElement>) {
     const drag = pointerRef.current;
@@ -520,6 +546,14 @@ export default function App() {
     const p = point(event),
       dx = p.x - drag.x,
       dy = p.y - drag.y;
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (
+      !drag.moved &&
+      Math.hypot((dx * rect.width) / pw, (dy * rect.height) / ph) < 4
+    )
+      return;
+    drag.moved = true;
+    setDragging(true);
     if (drag.kind === "text") {
       let x = (drag.box.x + drag.box.width / 2 + dx) / pw,
         y = (drag.box.y + drag.box.height / 2 + dy) / ph;
@@ -561,9 +595,49 @@ export default function App() {
       });
     }
   }
+  function openCaption() {
+    if (!media || busy || loading) return;
+    stop();
+    flushSync(() => {
+      setTab("text");
+      setEditingCaption(true);
+    });
+    captionRef.current?.focus({ preventScroll: true });
+    captionRef.current?.setSelectionRange(
+      edit.caption.length,
+      edit.caption.length,
+    );
+  }
   function pointerUp() {
+    const drag = pointerRef.current;
     pointerRef.current = null;
     setDragging(false);
+    if (drag?.kind === "text" && !drag.moved) openCaption();
+  }
+  function updateAudio(patch: {
+    audioStart?: number;
+    songVolume?: number;
+    originalVolume?: number;
+  }) {
+    setEdit((current) => ({ ...current, ...patch }));
+    invalidate();
+    setError("");
+    const audio = audioRef.current;
+    if (audio) {
+      if (patch.audioStart !== undefined && audio.readyState >= 1)
+        audio.currentTime = (patch.audioStart + time) % songDuration;
+      if (patch.songVolume !== undefined) audio.volume = patch.songVolume;
+      if (
+        playingRef.current &&
+        audio.paused &&
+        (patch.songVolume ?? edit.songVolume) > 0
+      )
+        void audio.play().catch(() => stop());
+    }
+    if (video && patch.originalVolume !== undefined) {
+      video.volume = patch.originalVolume;
+      video.muted = patch.originalVolume === 0;
+    }
   }
   function reset() {
     stop();
@@ -585,7 +659,7 @@ export default function App() {
     if (navigator.canShare?.({ files: [value.file] })) {
       try {
         await navigator.share({ files: [value.file] });
-        setNotice("Shared. Make another whenever you like.");
+        setNotice("Shared.");
       } catch (err) {
         if (!(err instanceof DOMException && err.name === "AbortError"))
           setNotice(
@@ -594,7 +668,7 @@ export default function App() {
       }
     } else {
       download(value);
-      setNotice("File downloaded. You can upload it to your favourite app.");
+      setNotice("File ready.");
     }
   }
   async function make(action: "download" | "share") {
@@ -629,11 +703,9 @@ export default function App() {
             );
       if (controller.signal.aborted)
         throw new DOMException("Export cancelled", "AbortError");
-      const extension = blob.type.includes("png")
-        ? "png"
-        : blob.type.includes("mp4")
-          ? "mp4"
-          : "webm";
+      if (format === "video" && blob.type !== "video/mp4")
+        throw new Error("MP4 export failed. Try saving again.");
+      const extension = format === "image" ? "png" : "mp4";
       const file = new File([blob], `teska-baje.${extension}`, {
         type: blob.type,
       });
@@ -642,13 +714,10 @@ export default function App() {
       setResult(value);
       if (action === "download") {
         download(value);
-        setNotice(
-          `${extension.toUpperCase()} ready. Download it again or share it.`,
-        );
+        setNotice(`${extension.toUpperCase()} ready.`);
       } else setNotice("Your file is ready. Tap Share file to send it.");
     } catch (err) {
-      if (controller.signal.aborted)
-        setNotice("Export cancelled. Your edits are still here.");
+      if (controller.signal.aborted) setNotice("Export cancelled.");
       else
         setError(
           err instanceof Error
@@ -717,15 +786,11 @@ export default function App() {
             </strong>
             <p>
               {help
-                ? "Add one photo or video. Finish “Teska Baje Ko”, frame it, and choose a part of the song. Then download or share your video. For a photo without audio, choose Still image."
+                ? "Add one photo or video. Finish “Teska Baje Ko”, frame it, and choose a part of the song. Then download or share your video. For a still photo, choose PNG image."
                 : "On iPhone: open this page in Safari, tap Share, then Add to Home Screen. On Android: open the browser menu and choose Install app or Add to home screen. Installation needs a secure HTTPS address."}
             </p>
             {help && (
-              <p>
-                Your photo or video stays on this device. Exports have no
-                watermark. MP4 is used when supported; some browsers export
-                WebM.
-              </p>
+              <p>Videos save as MP4. Photos and videos stay on your device.</p>
             )}
           </div>
           <button
@@ -742,23 +807,27 @@ export default function App() {
       )}
       <main>
         <div className="page-heading">
-          <div>
-            <h1>Make a Teska Baje.</h1>
-            <p>Your photo. Your caption. A little local flex.</p>
-          </div>
+          <h1 className="visually-hidden">Teska Baje editor</h1>
           <button
             className="quiet-button reset-button"
             onClick={reset}
             disabled={busy || loading}
           >
             <RotateCcw size={14} />
-            Reset edits
+            Reset
           </button>
         </div>
         <div className="editor-layout">
           <section className="preview-panel" aria-label="Meme preview">
             <div className="preview-toolbar">
-              <span className="preview-label">Preview</span>
+              <button
+                className="icon-button edit-caption-button"
+                aria-label="Edit text"
+                onClick={openCaption}
+                disabled={!media || busy || loading}
+              >
+                <Type size={18} />
+              </button>
               <label className="ratio-select">
                 <Maximize size={13} />
                 <select
@@ -782,7 +851,7 @@ export default function App() {
                 <ChevronDown size={12} />
               </label>
               <span className="dimensions">
-                {media ? `${size.width} × ${size.height}` : "Your canvas"}
+                {media ? `${size.width} × ${size.height}` : ""}
               </span>
             </div>
             <div
@@ -815,8 +884,16 @@ export default function App() {
                   onPointerDown={pointerDown}
                   onPointerMove={pointerMove}
                   onPointerUp={pointerUp}
-                  onPointerCancel={pointerUp}
+                  onPointerCancel={() => {
+                    pointerRef.current = null;
+                    setDragging(false);
+                  }}
                   onKeyDown={(e) => {
+                    if (e.key === "Enter" && tab === "text") {
+                      e.preventDefault();
+                      openCaption();
+                      return;
+                    }
                     if (
                       ![
                         "ArrowLeft",
@@ -877,26 +954,56 @@ export default function App() {
                       });
                   }}
                 />
+                {editingCaption && media && captionBox && (
+                  <textarea
+                    ref={captionRef}
+                    className="canvas-caption-input"
+                    aria-label="Edit caption on preview"
+                    value={edit.caption}
+                    maxLength={400}
+                    spellCheck={false}
+                    onChange={(e) => change({ caption: e.target.value })}
+                    onBlur={() => setEditingCaption(false)}
+                    onKeyDown={(e) => {
+                      if (
+                        e.key === "Escape" ||
+                        (e.key === "Enter" && (e.ctrlKey || e.metaKey))
+                      ) {
+                        e.preventDefault();
+                        setEditingCaption(false);
+                      }
+                    }}
+                    style={{
+                      left: `${(captionBox.x / pw) * 100}%`,
+                      top: `${(captionBox.y / ph) * 100}%`,
+                      width: `calc(${(captionBox.width / pw) * 100}% + 1px)`,
+                      height: `calc(${(captionBox.height / ph) * 100}% + 1px)`,
+                      fontFamily: fonts[edit.font].family,
+                      fontSize: (canvasDisplay.width * edit.size) / 100,
+                      color: edit.color,
+                      textAlign: edit.align,
+                      padding: `0 ${((canvasDisplay.width * edit.size) / 100) * 0.15}px`,
+                      WebkitTextStroke: edit.outline
+                        ? `${((canvasDisplay.width * edit.size) / 100) * 0.045}px #141414`
+                        : "0",
+                      textShadow: edit.shadow ? "0 2px 4px #000" : "none",
+                    }}
+                  />
+                )}
                 {!media && (
                   <div className="empty-state">
                     <div className="empty-icon">
                       <ImagePlus size={31} strokeWidth={1.2} />
                     </div>
-                    <h2>
-                      Start with your
-                      <br />
-                      kind of local.
-                    </h2>
-                    <p>Drop a photo or video here.</p>
+                    <h2>Add a photo or video</h2>
                     <button
                       className="primary-button upload-primary"
                       onClick={() => inputRef.current?.click()}
                       disabled={loading}
                     >
                       <Upload size={15} />
-                      {loading ? "Opening…" : "Choose a file"}
+                      {loading ? "Opening…" : "Upload"}
                     </button>
-                    <span className="file-types">JPG, PNG, WebP, MP4, MOV</span>
                   </div>
                 )}
                 {loading && media && (
@@ -906,31 +1013,21 @@ export default function App() {
                   </div>
                 )}
               </div>
+              {editingCaption && (
+                <button
+                  className="done-caption-button"
+                  aria-label="Done editing text"
+                  onPointerDown={(e) => e.preventDefault()}
+                  onClick={() => setEditingCaption(false)}
+                >
+                  <Check size={20} />
+                </button>
+              )}
               {dragOver && (
                 <div className="drop-overlay">
                   <Upload size={24} />
                   <strong>Drop to replace</strong>
                 </div>
-              )}
-            </div>
-            <div className="preview-instruction">
-              {media ? (
-                tab === "frame" ? (
-                  <>
-                    <Crop size={13} />
-                    Drag the photo or video to reframe it.
-                  </>
-                ) : (
-                  <>
-                    <Expand size={13} />
-                    Drag the caption. Pull the corner to resize.
-                  </>
-                )
-              ) : (
-                <>
-                  <span className="small-square" />
-                  One photo or video. No watermark.
-                </>
               )}
             </div>
             <div className="playback">
@@ -961,6 +1058,17 @@ export default function App() {
                 <span> / {formatTime(duration)}</span>
               </span>
             </div>
+            <AudioTimeline
+              start={edit.audioStart}
+              duration={duration}
+              trackDuration={songDuration}
+              time={time}
+              disabled={!media || busy || loading}
+              songVolume={edit.songVolume}
+              originalVolume={edit.originalVolume}
+              hasVideo={media?.kind === "video"}
+              onChange={updateAudio}
+            />
           </section>
           <section className="controls-panel" aria-label="Editor controls">
             <input
@@ -992,11 +1100,6 @@ export default function App() {
                       ? media.file.name
                       : "Add your media"}
                 </strong>
-                <span>
-                  {media
-                    ? `${media.kind === "image" ? "Photo" : "Video"} · ${(media.file.size / 1024 / 1024).toFixed(1)} MB`
-                    : "One photo or video to get started"}
-                </span>
               </div>
               <button
                 className="text-button"
@@ -1015,7 +1118,6 @@ export default function App() {
                 [
                   { id: "text", icon: Type, name: "Text" },
                   { id: "frame", icon: Crop, name: "Frame" },
-                  { id: "audio", icon: Music2, name: "Audio" },
                 ] as const
               ).map((t) => (
                 <button
@@ -1034,15 +1136,15 @@ export default function App() {
                     )
                       return;
                     e.preventDefault();
-                    const order: Tab[] = ["text", "frame", "audio"];
+                    const order: Tab[] = ["text", "frame"];
                     const index =
                       e.key === "Home"
                         ? 0
                         : e.key === "End"
-                          ? 2
+                          ? order.length - 1
                           : (order.indexOf(tab) +
-                              (e.key === "ArrowRight" ? 1 : 2)) %
-                            3;
+                              (e.key === "ArrowRight" ? 1 : order.length - 1)) %
+                            order.length;
                     setTab(order[index]);
                     document.getElementById(`tab-${order[index]}`)?.focus();
                   }}
@@ -1062,7 +1164,7 @@ export default function App() {
                 {tab === "text" && (
                   <>
                     <label className="field-label" htmlFor="caption">
-                      Your caption
+                      Text
                     </label>
                     <textarea
                       id="caption"
@@ -1073,9 +1175,6 @@ export default function App() {
                       rows={3}
                       placeholder="Teska Baje Ko…"
                     />
-                    <p className="field-note">
-                      Finish the line. English, नेपाली, or a bit of both.
-                    </p>
                     <span className="field-label font-label">Font</span>
                     <div className="font-options">
                       {(Object.keys(fonts) as FontId[]).map((id) => (
@@ -1092,9 +1191,6 @@ export default function App() {
                     </div>
                     <div className="color-heading">
                       <span className="field-label">Text color</span>
-                      <span className="hex-value">
-                        {edit.color.toUpperCase()}
-                      </span>
                     </div>
                     <div className="color-options">
                       {colors.map((color) => (
@@ -1213,7 +1309,6 @@ export default function App() {
                             className={`ratio-glyph ratio-${r.value.replace(":", "-")}`}
                           />
                           <strong>{r.label}</strong>
-                          <span>{r.hint}</span>
                         </button>
                       ))}
                     </div>
@@ -1226,10 +1321,6 @@ export default function App() {
                       display={`${Math.round(edit.zoom * 100)}%`}
                       onChange={(value) => change({ zoom: value })}
                     />
-                    <p className="field-note crop-note">
-                      Drag your media in the preview to choose the crop. Guides
-                      appear while you move.
-                    </p>
                     <button
                       className="text-button reset-crop"
                       onClick={() => change({ zoom: 1, panX: 0.5, panY: 0.5 })}
@@ -1322,10 +1413,6 @@ export default function App() {
                             setTime(0);
                           }}
                         />
-                        <p className="field-note">
-                          {formatTime(duration, true)} selected of{" "}
-                          {formatTime(media.duration, true)}.
-                        </p>
                       </div>
                     ) : (
                       <div className="duration-section">
@@ -1361,162 +1448,17 @@ export default function App() {
                     >
                       <option value="source">Source size</option>
                       <option value="1080">1080p</option>
-                      <option value="720">720p · smaller file</option>
+                      <option value="720">720p</option>
                     </select>
-                  </>
-                )}
-                {tab === "audio" && (
-                  <>
-                    <div className="track-heading">
-                      <span className="track-icon">
-                        <Music2 size={19} />
-                      </span>
-                      <div>
-                        <strong>Teska Baje audio</strong>
-                        <span>Hamri Aama Sahrhai Nai Baathee Chhin</span>
-                      </div>
-                      <span className="track-duration">
-                        {formatTime(songDuration)}
-                      </span>
-                    </div>
-                    <div className="waveform">
-                      <svg
-                        viewBox="0 0 360 66"
-                        preserveAspectRatio="none"
-                        role="img"
-                        aria-label="Song waveform and selected segment"
-                      >
-                        {waveform.map((peak, i) => {
-                          const t = (i / waveform.length) * songDuration,
-                            selected =
-                              t >= edit.audioStart &&
-                              t <= edit.audioStart + duration;
-                          return (
-                            <rect
-                              key={i}
-                              x={(i / waveform.length) * 360}
-                              y={33 - peak * 29}
-                              width={2}
-                              height={Math.max(2, peak * 58)}
-                              fill={selected ? "#242523" : "#cccec6"}
-                            />
-                          );
-                        })}
-                        <rect
-                          x={(edit.audioStart / songDuration) * 360}
-                          y={0}
-                          width={
-                            (Math.min(
-                              duration,
-                              songDuration - edit.audioStart,
-                            ) /
-                              songDuration) *
-                            360
-                          }
-                          height={66}
-                          fill="none"
-                          stroke="#242523"
-                          strokeWidth={1}
-                        />
-                      </svg>
-                    </div>
-                    <Slider
-                      label="Song starts at"
-                      min={0}
-                      max={Math.max(
-                        0,
-                        songDuration - Math.min(duration, songDuration),
-                      )}
-                      step={0.1}
-                      value={Math.min(
-                        edit.audioStart,
-                        Math.max(
-                          0,
-                          songDuration - Math.min(duration, songDuration),
-                        ),
-                      )}
-                      display={formatTime(edit.audioStart, true)}
-                      onChange={(value) => change({ audioStart: value })}
-                    />
-                    <div className="two-fields audio-fields">
-                      <label>
-                        Start time
-                        <span>
-                          <input
-                            aria-label="Audio start time"
-                            type="number"
-                            min={0}
-                            max={Math.max(
-                              0,
-                              songDuration - Math.min(duration, songDuration),
-                            )}
-                            step={0.1}
-                            value={Number(edit.audioStart.toFixed(1))}
-                            onChange={(e) =>
-                              change({
-                                audioStart: clamp(
-                                  Number(e.target.value),
-                                  0,
-                                  Math.max(
-                                    0,
-                                    songDuration -
-                                      Math.min(duration, songDuration),
-                                  ),
-                                ),
-                              })
-                            }
-                          />
-                          sec
-                        </span>
-                      </label>
-                      <div className="selected-length">
-                        <span>Selected length</span>
-                        <strong>{formatTime(duration, true)}</strong>
-                      </div>
-                    </div>
-                    <p className="field-note">
-                      {duration > songDuration
-                        ? "The track will loop to fill this clip."
-                        : "Audio follows your photo duration or video trim."}{" "}
-                      Change the length in Frame.
-                    </p>
-                    <div className="audio-levels">
-                      <Slider
-                        label="Song volume"
-                        value={edit.songVolume}
-                        display={`${Math.round(edit.songVolume * 100)}%`}
-                        onChange={(value) => change({ songVolume: value })}
-                      />
-                      {media?.kind === "video" && (
-                        <>
-                          <Slider
-                            label="Original video sound"
-                            value={edit.originalVolume}
-                            display={`${Math.round(edit.originalVolume * 100)}%`}
-                            onChange={(value) =>
-                              change({ originalVolume: value })
-                            }
-                          />
-                          <p className="field-note">
-                            Mix in your clip’s sound, if it has any.
-                          </p>
-                        </>
-                      )}
-                    </div>
-                    <div className="audio-tip">
-                      <Play size={14} />
-                      <span>
-                        Use play below the preview to hear your selection.
-                      </span>
-                    </div>
                   </>
                 )}
               </fieldset>
             </div>
             <div className="export-panel">
               <div className="export-heading">
-                <span>Ready when you are.</span>
+                <label htmlFor="download-format">Save as</label>
                 <select
+                  id="download-format"
                   aria-label="Download format"
                   disabled={busy}
                   value={format}
@@ -1526,8 +1468,8 @@ export default function App() {
                     invalidate();
                   }}
                 >
-                  <option value="video">Video with audio</option>
-                  <option value="image">Still image · PNG</option>
+                  <option value="video">MP4 video</option>
+                  <option value="image">PNG image</option>
                 </select>
               </div>
               {busy ? (
@@ -1547,7 +1489,6 @@ export default function App() {
                     </button>
                   </div>
                   <progress max={1} value={progress} />
-                  <p>Keep this page open until your file is ready.</p>
                 </div>
               ) : (
                 <div className="export-actions">
@@ -1557,7 +1498,7 @@ export default function App() {
                     onClick={() => void make("download")}
                   >
                     <ArrowDownToLine size={17} />
-                    Download {format === "video" ? "video" : "image"}
+                    Save {format === "video" ? "MP4" : "PNG"}
                   </button>
                   <button
                     className="share-button"
@@ -1572,10 +1513,6 @@ export default function App() {
                   </button>
                 </div>
               )}
-              <div className="export-footnote">
-                <span className="privacy-dot" />
-                Made here. Saved to your device.
-              </div>
             </div>
           </section>
         </div>
@@ -1597,10 +1534,6 @@ export default function App() {
             </button>
           </div>
         )}
-        <footer>
-          <span>Who needs fancy, anyway?</span>
-          <span>No account. No watermark. Just make it.</span>
-        </footer>
       </main>
       <audio
         ref={audioRef}

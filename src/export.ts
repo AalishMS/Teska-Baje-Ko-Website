@@ -10,7 +10,8 @@ import {
   Mp4OutputFormat,
   Output,
   Quality,
-  WebMOutputFormat,
+  EncodedPacketSink,
+  EncodedVideoPacketSource,
   canEncodeAudio,
   canEncodeVideo,
 } from "mediabunny";
@@ -76,33 +77,58 @@ async function mixedAudio(edit: Edit, media: Media, signal: AbortSignal) {
     try {
       const track = await input.getPrimaryAudioTrack();
       if (track) {
-        if (!(await track.canDecode()))
-          throw new Error(
-            "This browser cannot read the original video sound. Set its volume to zero, or try a different browser.",
-          );
-        const sink = new AudioBufferSink(track);
-        const gain = ctx.createGain();
-        gain.gain.value = edit.originalVolume;
-        gain.connect(ctx.destination);
-        for await (const wrapped of sink.buffers(
-          edit.trimStart,
-          edit.trimEnd,
-        )) {
-          checkAbort(signal);
-          const start = Math.max(edit.trimStart, wrapped.timestamp),
-            end = Math.min(
-              edit.trimEnd,
-              wrapped.timestamp + wrapped.buffer.duration,
+        if (!(await track.canDecode())) {
+          // HTML audio decoding also works on HTTP, where WebCodecs is unavailable.
+          const decoder = new AudioContext();
+          let buffer: AudioBuffer;
+          try {
+            buffer = await decoder.decodeAudioData(
+              await media.file.arrayBuffer(),
             );
-          if (end <= start) continue;
-          const src = ctx.createBufferSource();
-          src.buffer = wrapped.buffer;
-          src.connect(gain);
-          src.start(
-            start - edit.trimStart,
-            start - wrapped.timestamp,
-            end - start,
-          );
+          } catch {
+            throw new Error(
+              "Cannot read the video sound. Set its volume to zero and try again.",
+            );
+          } finally {
+            await decoder.close();
+          }
+          checkAbort(signal);
+          const source = ctx.createBufferSource();
+          source.buffer = buffer;
+          const gain = ctx.createGain();
+          gain.gain.value = edit.originalVolume;
+          source.connect(gain).connect(ctx.destination);
+          if (edit.trimStart < buffer.duration)
+            source.start(
+              0,
+              edit.trimStart,
+              Math.min(duration, buffer.duration - edit.trimStart),
+            );
+        } else {
+          const sink = new AudioBufferSink(track);
+          const gain = ctx.createGain();
+          gain.gain.value = edit.originalVolume;
+          gain.connect(ctx.destination);
+          for await (const wrapped of sink.buffers(
+            edit.trimStart,
+            edit.trimEnd,
+          )) {
+            checkAbort(signal);
+            const start = Math.max(edit.trimStart, wrapped.timestamp),
+              end = Math.min(
+                edit.trimEnd,
+                wrapped.timestamp + wrapped.buffer.duration,
+              );
+            if (end <= start) continue;
+            const src = ctx.createBufferSource();
+            src.buffer = wrapped.buffer;
+            src.connect(gain);
+            src.start(
+              start - edit.trimStart,
+              start - wrapped.timestamp,
+              end - start,
+            );
+          }
         }
       }
     } finally {
@@ -157,93 +183,118 @@ async function sourceVideo(media: Media) {
   });
   return video;
 }
-async function recordFallback(
-  canvas: HTMLCanvasElement,
-  image: HTMLImageElement | null,
-  edit: Edit,
+const FPS = 24;
+async function* sourceFrames(
   media: Media,
-  audio: AudioBuffer | null,
+  edit: Edit,
+  image: HTMLImageElement | null,
+  count: number,
   signal: AbortSignal,
-  progress: (value: number) => void,
-) {
-  const mime = [
-    "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
-    "video/mp4",
-    "video/webm;codecs=vp9,opus",
-    "video/webm",
-  ].find(
-    (t) =>
-      typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(t),
-  );
-  if (!mime || !canvas.captureStream)
-    throw new Error(
-      "Video export is unavailable in this browser. Try the latest Chrome, Edge, or Safari.",
-    );
-  const ctx = canvas.getContext("2d")!,
-    stream = canvas.captureStream(24),
-    duration = durationOf(edit, media);
-  let audioCtx: AudioContext | null = null,
-    audioSrc: globalThis.AudioBufferSourceNode | null = null,
+): AsyncGenerator<Drawable> {
+  let input: Input | null = null,
     video: HTMLVideoElement | null = null;
-  let recorder: MediaRecorder | null = null;
+  let iterator: AsyncGenerator<
+    { canvas: HTMLCanvasElement | OffscreenCanvas } | null,
+    void,
+    unknown
+  > | null = null;
   try {
-    if (audio) {
-      audioCtx = new AudioContext();
-      await audioCtx.resume();
-      const dest = audioCtx.createMediaStreamDestination();
-      audioSrc = audioCtx.createBufferSource();
-      audioSrc.buffer = audio;
-      audioSrc.connect(dest);
-      for (const track of dest.stream.getAudioTracks()) stream.addTrack(track);
-    }
     if (media.kind === "video") {
-      video = await sourceVideo(media);
-      await seek(video, edit.trimStart);
+      input = new Input({
+        source: new BlobSource(media.file),
+        formats: ALL_FORMATS,
+      });
+      const track = await input.getPrimaryVideoTrack();
+      if (track && (await track.canDecode())) {
+        const first = await track.getFirstTimestamp();
+        iterator = new CanvasSink(track, { poolSize: 2 }).canvasesAtTimestamps(
+          Array.from({ length: count }, (_, i) =>
+            Math.max(
+              first,
+              Math.min(edit.trimEnd - 0.001, edit.trimStart + i / FPS),
+            ),
+          ),
+        );
+      } else video = await sourceVideo(media);
     }
-    render(ctx, video || image, media.width, media.height, edit);
-    const chunks: Blob[] = [];
-    recorder = new MediaRecorder(stream, {
-      mimeType: mime,
-      videoBitsPerSecond: 6_000_000,
-    });
-    const done = new Promise<Blob>((resolve, reject) => {
-      recorder!.ondataavailable = (event) => {
-        if (event.data.size) chunks.push(event.data);
-      };
-      recorder!.onstop = () =>
-        resolve(new Blob(chunks, { type: mime.split(";")[0] }));
-      recorder!.onerror = () =>
-        reject(new Error("Recording failed. Please try again."));
-    });
-    recorder.start();
-    audioSrc?.start();
-    if (video) await video.play();
-    const start = performance.now();
-    await new Promise<void>((resolve, reject) => {
-      const frame = () => {
-        if (signal.aborted) {
-          reject(new DOMException("Export cancelled", "AbortError"));
-          return;
-        }
-        const elapsed = (performance.now() - start) / 1000;
-        render(ctx, video || image, media.width, media.height, edit);
-        progress(0.1 + 0.85 * Math.min(1, elapsed / duration));
-        if (elapsed >= duration) resolve();
-        else requestAnimationFrame(frame);
-      };
-      frame();
-    });
-    recorder.stop();
-    return await done;
+    for (let i = 0; i < count; i++) {
+      checkAbort(signal);
+      if (iterator) {
+        const next = await iterator.next();
+        if (next.done || !next.value)
+          throw new Error("Cannot read this video frame. Try a different MP4.");
+        yield next.value.canvas;
+      } else if (video) {
+        await seek(
+          video,
+          Math.min(edit.trimEnd - 0.001, edit.trimStart + i / FPS),
+        );
+        yield video;
+      } else if (image) yield image;
+      else throw new Error("No photo or video is available to export.");
+    }
   } finally {
-    if (recorder?.state === "recording") recorder.stop();
-    video?.pause();
+    await iterator?.return();
+    input?.dispose();
     if (video) {
+      video.pause();
       video.removeAttribute("src");
       video.load();
     }
-    stream.getTracks().forEach((track) => track.stop());
-    if (audioCtx) await audioCtx.close();
+  }
+}
+async function softwareVideo(
+  canvas: HTMLCanvasElement,
+  media: Media,
+  edit: Edit,
+  image: HTMLImageElement | null,
+  signal: AbortSignal,
+  progress: (value: number) => void,
+) {
+  // Loaded only if native H.264 encoding is unavailable, including HTTP phone previews.
+  const HME = await import("h264-mp4-encoder");
+  const encoder = await HME.createH264MP4Encoder();
+  const count = Math.ceil(durationOf(edit, media) * FPS);
+  try {
+    encoder.width = canvas.width;
+    encoder.height = canvas.height;
+    encoder.frameRate = FPS;
+    encoder.quantizationParameter = 22;
+    encoder.speed = 5;
+    encoder.groupOfPictures = FPS * 2;
+    encoder.initialize();
+    const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
+    let i = 0;
+    let pixels: Uint8ClampedArray | null = null;
+    for await (const source of sourceFrames(
+      media,
+      edit,
+      image,
+      count,
+      signal,
+    )) {
+      checkAbort(signal);
+      if (!pixels || media.kind === "video") {
+        render(ctx, source, media.width, media.height, edit);
+        pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      }
+      encoder.addFrameRgba(pixels);
+      progress(0.1 + (0.75 * ++i) / count);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    checkAbort(signal);
+    encoder.finalize();
+    return new Blob(
+      [new Uint8Array(encoder.FS.readFile(encoder.outputFilename)).buffer],
+      { type: "video/mp4" },
+    );
+  } finally {
+    try {
+      encoder.FS.unlink(encoder.outputFilename);
+    } catch {
+      /* Failed initialization may not create a file. */
+    }
+    encoder.delete();
   }
 }
 export async function exportVideo(
@@ -257,119 +308,101 @@ export async function exportVideo(
   checkAbort(signal);
   const { width, height } = dimensions(edit, media);
   if (width > 4096 || height > 4096)
-    throw new Error(
-      "Choose 1080p or 720p in Frame settings to export this large file.",
-    );
+    throw new Error("Choose 1080p or 720p in Frame to export this file.");
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
-  const ctx = canvas.getContext("2d")!;
+  const native = await canEncodeVideo("avc", { width, height, frameRate: FPS });
   progress(0.02);
   const audio = await mixedAudio(edit, media, signal);
   checkAbort(signal);
   progress(0.1);
-  const isMp4 = await canEncodeVideo("avc", { width, height, frameRate: 24 });
-  const hasWebm = isMp4
-    ? false
-    : await canEncodeVideo("vp9", { width, height, frameRate: 24 });
-  if (!isMp4 && !hasWebm)
-    return recordFallback(canvas, image, edit, media, audio, signal, progress);
-  if (isMp4 && audio && !(await canEncodeAudio("aac"))) registerAacEncoder();
+  if (audio && !(await canEncodeAudio("aac"))) registerAacEncoder();
+  const duration = durationOf(edit, media),
+    count = Math.ceil(duration * FPS);
+  let encoded: Blob | null = null;
+  if (!native)
+    encoded = await softwareVideo(canvas, media, edit, image, signal, progress);
+  checkAbort(signal);
   const target = new BufferTarget();
   const output = new Output({
     target,
-    format: isMp4
-      ? new Mp4OutputFormat({ fastStart: "in-memory" })
-      : new WebMOutputFormat(),
+    format: new Mp4OutputFormat({ fastStart: "in-memory" }),
   });
-  const frames = new CanvasSource(canvas, {
-    codec: isMp4 ? "avc" : "vp9",
-    quality: new Quality("high"),
-    keyFrameInterval: 2,
-  });
-  output.addVideoTrack(frames, { frameRate: 24 });
-  let audioSource: AudioBufferSource | null = null;
-  if (audio) {
-    audioSource = new AudioBufferSource({
-      codec: isMp4 ? "aac" : "opus",
-      quality: new Quality({ bitrate: 128000 }),
-    });
-    output.addAudioTrack(audioSource);
-  }
+  const frames = native
+    ? new CanvasSource(canvas, {
+        codec: "avc",
+        quality: new Quality("high"),
+        keyFrameInterval: 2,
+      })
+    : null;
+  const packets = frames ? null : new EncodedVideoPacketSource("avc");
+  output.addVideoTrack(frames || packets!, { frameRate: FPS });
+  const audioSource = audio
+    ? new AudioBufferSource({
+        codec: "aac",
+        quality: new Quality({ bitrate: 128000 }),
+      })
+    : null;
+  if (audioSource) output.addAudioTrack(audioSource);
   let input: Input | null = null,
-    fallback: HTMLVideoElement | null = null;
-  let iterator: AsyncGenerator<
-    { canvas: HTMLCanvasElement | OffscreenCanvas } | null,
-    void,
-    unknown
-  > | null = null;
-  let completed = false;
+    completed = false;
   try {
-    const duration = durationOf(edit, media),
-      count = Math.ceil(duration * 24);
-    if (media.kind === "video") {
-      input = new Input({
-        source: new BlobSource(media.file),
-        formats: ALL_FORMATS,
-      });
-      const track = await input.getPrimaryVideoTrack();
-      if (track && (await track.canDecode())) {
-        const sink = new CanvasSink(track, { poolSize: 2 });
-        iterator = sink.canvasesAtTimestamps(
-          Array.from({ length: count }, (_, i) =>
-            Math.min(edit.trimEnd - 0.001, edit.trimStart + i / 24),
-          ),
-        );
-      } else {
-        fallback = await sourceVideo(media);
-      }
-    }
     await output.start();
-    if (audioSource && audio) {
+    if (audio && audioSource) {
       await audioSource.add(audio);
       audioSource.close();
     }
-    for (let i = 0; i < count; i++) {
-      checkAbort(signal);
-      let source: Drawable | null = image;
-      if (iterator) {
-        const next = await iterator.next();
-        if (next.done || !next.value)
-          throw new Error(
-            "A video frame could not be decoded. Try trimming the clip or using a different MP4.",
-          );
-        source = next.value.canvas;
-      } else if (fallback) {
-        await seek(
-          fallback,
-          Math.min(edit.trimEnd - 0.001, edit.trimStart + i / 24),
+    if (frames) {
+      const ctx = canvas.getContext("2d")!;
+      let i = 0;
+      for await (const source of sourceFrames(
+        media,
+        edit,
+        image,
+        count,
+        signal,
+      )) {
+        checkAbort(signal);
+        if (i === 0 || media.kind === "video")
+          render(ctx, source, media.width, media.height, edit);
+        await frames.add(i / FPS, Math.min(1 / FPS, duration - i / FPS));
+        progress(0.1 + (0.85 * ++i) / count);
+        if (i % 4 === 0) await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      frames.close();
+    } else {
+      input = new Input({
+        source: new BlobSource(encoded!),
+        formats: ALL_FORMATS,
+      });
+      const track = await input.getPrimaryVideoTrack();
+      if (!track) throw new Error("MP4 encoding failed. Try saving again.");
+      const decoderConfig = await track.getDecoderConfig();
+      if (!decoderConfig)
+        throw new Error("MP4 encoding failed. Try saving again.");
+      for await (const packet of new EncodedPacketSink(track).packets()) {
+        checkAbort(signal);
+        await packets!.add(
+          packet.clone({
+            duration: Math.min(
+              packet.duration,
+              Math.max(0, duration - packet.timestamp),
+            ),
+          }),
+          { decoderConfig },
         );
-        source = fallback;
       }
-      if (i === 0 || media.kind === "video")
-        render(ctx, source, media.width, media.height, edit);
-      await frames.add(i / 24, Math.min(1 / 24, duration - i / 24));
-      if (i % 4 === 0) {
-        progress(0.1 + (0.85 * i) / count);
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      }
+      packets!.close();
+      progress(0.95);
     }
-    frames.close();
     checkAbort(signal);
     await output.finalize();
     completed = true;
     progress(1);
-    return new Blob([target.buffer!], {
-      type: isMp4 ? "video/mp4" : "video/webm",
-    });
+    return new Blob([target.buffer!], { type: "video/mp4" });
   } finally {
-    await iterator?.return();
     input?.dispose();
-    if (fallback) {
-      fallback.pause();
-      fallback.removeAttribute("src");
-      fallback.load();
-    }
     if (!completed) await output.cancel().catch(() => {});
   }
 }

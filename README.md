@@ -6,9 +6,9 @@ A small, installable photo and video editor for the Nepali **“Teska Baje Ko…
 - Original aspect ratio by default, plus 9:16, 1:1, 4:5, 16:9, and 4:3.
 - Crop by dragging the media, zoom, and trim videos.
 - Editable “Teska Baje Ko ” caption; four fonts, color picker, outline, shadow, and text alignment.
-- Drag and resize the caption directly on the preview; alignment guides and snapping appear while dragging. Arrow keys move the caption, and Shift moves it farther.
+- Tap the caption to edit it directly on the preview. Drag and resize it; alignment guides and snapping appear while dragging. Arrow keys move the caption, and Shift moves it farther.
 - English and Nepali text, with bundled fonts and emoji fallback.
-- Built-in audio with an adjustable start point and volume. Audio length follows the photo duration or video trim. Original video sound can be mixed in separately.
+- Built-in audio with a waveform selector directly below playback and volume controls behind the speaker button. Audio length follows the photo duration or video trim. Original video sound can be mixed in separately.
 - Video export, still PNG export, and file sharing where supported. No watermark or account.
 - Web app manifest, app icons, and installation support on phones.
 
@@ -45,7 +45,7 @@ Vercel provides HTTPS, which enables phone installation and browser sharing. Thi
 
 ## Browser behavior
 
-Use a current Chrome, Edge, or Safari for video editing. MP4 with H.264 video and AAC audio is preferred; browsers without H.264 encoding use WebM. Older browsers use real-time recording when available. The built-in AAC encoder runs locally when the browser lacks native AAC encoding.
+Videos always export as MP4 with H.264 video and AAC audio. Native browser encoding is used when available. A software H.264 encoder is loaded on demand otherwise, including when testing through an HTTP Tailscale address. The built-in AAC encoder runs locally when the browser lacks native AAC encoding. All rendering remains on the device.
 
 Export needs the page to stay open. Very large sources can be reduced to 1080p or 720p in **Frame → Export resolution**. Image input support depends on the browser; JPG, PNG, and WebP are the safest choices. Video decoding depends on the source codec as well as its file extension.
 
@@ -56,8 +56,9 @@ On Android, use **Install app** or the browser’s install menu. On iPhone, open
 ## Project layout
 
 - `src/App.tsx`: editor controls, media loading, playback, installation, and sharing.
+- `src/AudioTimeline.tsx`: waveform selection and music/original volume controls.
 - `src/editor.ts`: canvas composition, caption layout, aspect ratio, and crop geometry. The preview and export share this renderer.
-- `src/export.ts`: frame-accurate video export, audio mixing, PNG export, and recording fallback. Loaded only when exporting.
+- `src/export.ts`: frame-accurate MP4 export, audio mixing, PNG export, and software encoding fallback. Loaded only when exporting.
 - `src/styles.css`: neutral, square-cornered desktop and mobile editor.
 - `public/audio/teska-baje.m4a`: audio extracted from the supplied `Teska_baje.mp4`.
 - `public/manifest.webmanifest`, `public/sw.js`: installable app configuration.
@@ -72,4 +73,4 @@ Actual iPhone/Android hardware and their native share sheets still need device t
 
 ## Credits
 
-The built-in song/reference audio was supplied for this project. Its ownership remains with its respective rights holders. Dependencies retain their own licenses: React, Vite, Lucide, Mediabunny and its AAC encoder, and the bundled Fontsource fonts (Arimo, Libre Baskerville, Oswald, Kalam, Noto Sans Devanagari, and Noto Emoji). See `THIRD_PARTY_NOTICES.md`.
+The built-in song/reference audio was supplied for this project. Its ownership remains with its respective rights holders. Dependencies retain their own licenses: React, Vite, Lucide, Mediabunny and its AAC encoder, h264-mp4-encoder, and the bundled Fontsource fonts (Arimo, Libre Baskerville, Oswald, Kalam, Noto Sans Devanagari, and Noto Emoji). See `THIRD_PARTY_NOTICES.md`.

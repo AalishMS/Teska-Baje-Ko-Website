@@ -200,6 +200,7 @@ export function render(
   edit: Edit,
   guides = false,
   selected = false,
+  hideCaption = false,
 ): TextBox {
   const { width: w, height: h } = ctx.canvas;
   ctx.clearRect(0, 0, w, h);
@@ -210,7 +211,7 @@ export function render(
     ctx.drawImage(source, r.x, r.y, r.width, r.height);
   }
   const box = textLayout(ctx, w, h, edit);
-  if (source && edit.caption.trim()) {
+  if (source && edit.caption.trim() && !hideCaption) {
     ctx.save();
     ctx.textBaseline = "middle";
     ctx.textAlign = edit.align;

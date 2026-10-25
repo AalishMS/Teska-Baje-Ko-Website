@@ -84,3 +84,42 @@ test("Time display handles boundaries and invalid metadata", () => {
   assert.equal(formatTime(Infinity), "0:00");
   assert.equal(formatTime(3.5, true), "0:03.5");
 });
+
+test("In-place editing hides the baked caption while preserving media and text bounds", async () => {
+  const { render } = await import("../src/editor.ts");
+  let textDraws = 0,
+    mediaDraws = 0;
+  const ctx = {
+    canvas: { width: 900, height: 1200 },
+    font: "",
+    clearRect() {},
+    fillRect() {},
+    save() {},
+    restore() {},
+    strokeText() {},
+    drawImage() {
+      mediaDraws++;
+    },
+    fillText() {
+      textDraws++;
+    },
+    measureText: (text: string) => ({ width: Array.from(text).length * 10 }),
+  } as unknown as CanvasRenderingContext2D;
+  const source = {} as HTMLImageElement;
+  const editingBox = render(
+    ctx,
+    source,
+    900,
+    1200,
+    defaults,
+    false,
+    false,
+    true,
+  );
+  assert.equal(textDraws, 0);
+  assert.equal(mediaDraws, 1);
+  const savedBox = render(ctx, source, 900, 1200, defaults);
+  assert.ok(textDraws > 0);
+  assert.equal(mediaDraws, 2);
+  assert.deepEqual(editingBox, savedBox);
+});

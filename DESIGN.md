@@ -17,3 +17,5 @@ Layout: compact top bar, task heading, broad preview on the left and bounded edi
 [ play ----- time -----------][ Download Share ]
 
 Review: the requested neutral palette and square corners are deliberate. Avoid newspaper columns, decorative badges, gradients, dashboard metrics and a marketing hero. The media is the only hero. Alignment grid and crop controls appear in response to editing.
+
+Update: keep the neutral palette and type. Remove the marketing heading, helper notes, repeated file details, and footer. Keep labeled tools. Playback and the music waveform form two adjacent timeline rows under the canvas, with volume behind a speaker button. Tap text to edit it in place; dragging still moves it. Text and Frame are the only sidebar tabs. Review: these changes follow familiar story editing controls and remove decorative copy.

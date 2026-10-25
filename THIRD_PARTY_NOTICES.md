@@ -10,3 +10,5 @@ This project uses the packages pinned in `package-lock.json`. Their original lic
 - Arimo, Libre Baskerville, Oswald, Kalam, Noto Sans Devanagari, and Noto Emoji: SIL Open Font License 1.1, distributed through Fontsource, https://fontsource.org/
 
 The bundled `public/audio/teska-baje.m4a` is extracted from the audio supplied by the project owner. The song and recording are not covered by the application source’s dependencies’ licenses; their respective owners retain their rights.
+
+- h264-mp4-encoder: MIT wrapper, public-domain minih264, and MPL-1.1 libmp4v2. Its WebAssembly software encoder is loaded only when needed. Source and upstream notices: https://github.com/TrevorSundberg/h264-mp4-encoder
