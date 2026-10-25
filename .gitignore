@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.sites/
+.openai/
+*.tar.gz
+*.tgz
+*.tsbuildinfo
+.env*
+!.env.example
+.DS_Store
+output/
+.playwright-cli/
+.playwright/
