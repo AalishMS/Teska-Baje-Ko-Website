@@ -183,7 +183,11 @@ async function sourceVideo(media: Media) {
   });
   return video;
 }
-const FPS = 24;
+// Still photos have no motion; one frame per second preserves the image
+// while avoiding 24 identical encodes per second. Videos retain 24 fps.
+function frameRateFor(media: Media) {
+  return media.kind === "image" ? 1 : 24;
+}
 async function* sourceFrames(
   media: Media,
   edit: Edit,
@@ -191,6 +195,7 @@ async function* sourceFrames(
   count: number,
   signal: AbortSignal,
 ): AsyncGenerator<Drawable> {
+  const frameRate = frameRateFor(media);
   let input: Input | null = null,
     video: HTMLVideoElement | null = null;
   let iterator: AsyncGenerator<
@@ -211,7 +216,7 @@ async function* sourceFrames(
           Array.from({ length: count }, (_, i) =>
             Math.max(
               first,
-              Math.min(edit.trimEnd - 0.001, edit.trimStart + i / FPS),
+              Math.min(edit.trimEnd - 0.001, edit.trimStart + i / frameRate),
             ),
           ),
         );
@@ -227,7 +232,7 @@ async function* sourceFrames(
       } else if (video) {
         await seek(
           video,
-          Math.min(edit.trimEnd - 0.001, edit.trimStart + i / FPS),
+          Math.min(edit.trimEnd - 0.001, edit.trimStart + i / frameRate),
         );
         yield video;
       } else if (image) yield image;
@@ -252,16 +257,17 @@ async function softwareVideo(
   progress: (value: number) => void,
 ) {
   // Loaded only if native H.264 encoding is unavailable, including HTTP phone previews.
+  const frameRate = frameRateFor(media);
   const HME = await import("h264-mp4-encoder");
   const encoder = await HME.createH264MP4Encoder();
-  const count = Math.ceil(durationOf(edit, media) * FPS);
+  const count = Math.ceil(durationOf(edit, media) * frameRate);
   try {
     encoder.width = canvas.width;
     encoder.height = canvas.height;
-    encoder.frameRate = FPS;
+    encoder.frameRate = frameRate;
     encoder.quantizationParameter = 22;
     encoder.speed = 5;
-    encoder.groupOfPictures = FPS * 2;
+    encoder.groupOfPictures = frameRate * 2;
     encoder.initialize();
     const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
     let i = 0;
@@ -303,6 +309,7 @@ export async function exportVideo(
   image: HTMLImageElement | null,
   signal: AbortSignal,
   progress: (value: number) => void,
+  onStatus: (message: string) => void = () => {},
 ): Promise<Blob> {
   await document.fonts.ready;
   checkAbort(signal);
@@ -312,14 +319,26 @@ export async function exportVideo(
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
-  const native = await canEncodeVideo("avc", { width, height, frameRate: FPS });
+  const frameRate = frameRateFor(media);
+  onStatus("Checking video support…");
+  const native = await canEncodeVideo("avc", { width, height, frameRate });
+  onStatus(
+    native
+      ? "Preparing audio…"
+      : "Preparing audio · software encoding will take longer…",
+  );
   progress(0.02);
   const audio = await mixedAudio(edit, media, signal);
   checkAbort(signal);
   progress(0.1);
   if (audio && !(await canEncodeAudio("aac"))) registerAacEncoder();
   const duration = durationOf(edit, media),
-    count = Math.ceil(duration * FPS);
+    count = Math.ceil(duration * frameRate);
+  onStatus(
+    native
+      ? "Making your video…"
+      : "Software encoding · this takes longer…",
+  );
   let encoded: Blob | null = null;
   if (!native)
     encoded = await softwareVideo(canvas, media, edit, image, signal, progress);
@@ -337,7 +356,7 @@ export async function exportVideo(
       })
     : null;
   const packets = frames ? null : new EncodedVideoPacketSource("avc");
-  output.addVideoTrack(frames || packets!, { frameRate: FPS });
+  output.addVideoTrack(frames || packets!, { frameRate });
   const audioSource = audio
     ? new AudioBufferSource({
         codec: "aac",
@@ -366,7 +385,10 @@ export async function exportVideo(
         checkAbort(signal);
         if (i === 0 || media.kind === "video")
           render(ctx, source, media.width, media.height, edit);
-        await frames.add(i / FPS, Math.min(1 / FPS, duration - i / FPS));
+        await frames.add(
+          i / frameRate,
+          Math.min(1 / frameRate, duration - i / frameRate),
+        );
         progress(0.1 + (0.85 * ++i) / count);
         if (i % 4 === 0) await new Promise((resolve) => setTimeout(resolve, 0));
       }
@@ -397,6 +419,7 @@ export async function exportVideo(
       progress(0.95);
     }
     checkAbort(signal);
+    onStatus("Finishing MP4…");
     await output.finalize();
     completed = true;
     progress(1);

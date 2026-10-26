@@ -64,7 +64,7 @@ export const defaults: Edit = {
   audioStart: 0,
   songVolume: 1,
   originalVolume: 0,
-  resolution: "source",
+  resolution: "1080",
 };
 export interface Media {
   file: File;

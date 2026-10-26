@@ -49,6 +49,8 @@ Vercel provides HTTPS, which enables phone installation and browser sharing. Aut
 
 Videos always export as MP4 with H.264 video and AAC audio. Native browser encoding is used when available. A software H.264 encoder is loaded on demand otherwise, including when testing through an HTTP Tailscale address. The built-in AAC encoder runs locally when the browser lacks native AAC encoding. All rendering remains on the device.
 
+Export defaults to 1080p. Still photos use one video frame per second instead of encoding identical frames at 24 fps; video sources remain at 24 fps. The export status indicates when the slower software H.264 encoder is needed.
+
 Export needs the page to stay open. Very large sources can be reduced to 1080p or 720p in **Frame → Export resolution**. Image input support depends on the browser; JPG, PNG, and WebP are the safest choices. Video decoding depends on the source codec as well as its file extension.
 
 Native sharing depends on the browser and operating system. If encoding is needed, the first tap prepares the file; tap **Share file** once it is ready to open the system share sheet. Browsers without file sharing download the file instead.

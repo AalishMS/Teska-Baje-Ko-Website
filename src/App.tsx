@@ -125,6 +125,7 @@ export default function App() {
   );
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [exportStatus, setExportStatus] = useState("");
   const [format, setFormat] = useState<"video" | "image">("video");
   const [result, setResult] = useState<Result | null>(null);
   const [fontsReady, setFontsReady] = useState(0);
@@ -681,6 +682,7 @@ export default function App() {
     stop();
     setBusy(true);
     setProgress(0);
+    setExportStatus("Preparing export…");
     setError("");
     setNotice("");
     const controller = new AbortController();
@@ -700,6 +702,7 @@ export default function App() {
               image,
               controller.signal,
               setProgress,
+              setExportStatus,
             );
       if (controller.signal.aborted)
         throw new DOMException("Export cancelled", "AbortError");
@@ -1481,9 +1484,7 @@ export default function App() {
                   <div>
                     <LoaderCircle size={15} className="spin" />
                     <span>
-                      {progress < 0.1
-                        ? "Preparing audio…"
-                        : `Making your ${format === "video" ? "video" : "image"}… ${Math.round(progress * 100)}%`}
+                      {exportStatus} {Math.round(progress * 100)}%
                     </span>
                     <button
                       className="text-button"

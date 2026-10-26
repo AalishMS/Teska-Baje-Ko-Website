@@ -10,11 +10,15 @@ import {
   type Edit,
 } from "../src/editor.ts";
 
-test("Original canvas keeps the uploaded dimensions; presets remain even and correctly proportioned", () => {
-  assert.deepEqual(dimensions(defaults, { width: 1200, height: 1600 }), {
-    width: 1200,
-    height: 1600,
+test("Exports default to 1080p; source size and aspect ratios remain available", () => {
+  assert.deepEqual(dimensions(defaults, { width: 3024, height: 4032 }), {
+    width: 810,
+    height: 1080,
   });
+  assert.deepEqual(
+    dimensions({ ...defaults, resolution: "source" }, { width: 1200, height: 1600 }),
+    { width: 1200, height: 1600 },
+  );
   const ratio = dimensions(
     { ...defaults, ratio: "9:16", resolution: "1080" },
     { width: 1920, height: 1080 },
