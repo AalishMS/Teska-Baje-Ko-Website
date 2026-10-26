@@ -31,9 +31,11 @@ npm run build # Type-check and production build
 npm run preview
 ```
 
-## Deploy to Vercel later
+## Vercel deployment
 
-Import this GitHub repository into Vercel. The repository root is the app root; no subdirectory or environment variables are required. `vercel.json` supplies these settings:
+The live website is [teska-baje.vercel.app](https://teska-baje.vercel.app). The Vercel project `teska-baje` is connected to this GitHub repository. Pushes to `main` automatically build and deploy the production website; pushes to other branches create preview deployments.
+
+The repository root is the app root; no subdirectory or environment variables are required. `vercel.json` supplies these settings:
 
 | Setting          | Value           |
 | ---------------- | --------------- |
@@ -41,7 +43,7 @@ Import this GitHub repository into Vercel. The repository root is the app root; 
 | Build command    | `npm run build` |
 | Output directory | `dist`          |
 
-Vercel provides HTTPS, which enables phone installation and browser sharing. This repository does not configure or trigger any deployment itself.
+Vercel provides HTTPS, which enables phone installation and browser sharing. Automatic deployments use Vercel's GitHub integration; no GitHub Actions workflow or deployment token is needed.
 
 ## Browser behavior
 
