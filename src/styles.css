@@ -1602,6 +1602,12 @@ main {
   border-top: 1px solid var(--line);
   padding: 10px 18px 15px;
 }
+.photo-duration-timeline {
+  padding: 2px 18px 16px;
+}
+.photo-duration-timeline .slider-field {
+  margin-bottom: 0;
+}
 .audio-timeline-heading {
   display: flex;
   gap: 10px;
@@ -1685,6 +1691,9 @@ main {
   }
   .audio-timeline {
     padding: 8px 12px 13px;
+  }
+  .photo-duration-timeline {
+    padding: 2px 12px 16px;
   }
   .audio-timeline-heading output {
     font-size: 11px;

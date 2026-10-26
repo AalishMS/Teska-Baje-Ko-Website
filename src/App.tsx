@@ -1069,6 +1069,25 @@ export default function App() {
               hasVideo={media?.kind === "video"}
               onChange={updateAudio}
             />
+            {media?.kind === "image" && (
+              <fieldset
+                className="photo-duration-timeline"
+                disabled={busy || loading}
+              >
+                <Slider
+                  label="Photo duration"
+                  min={1}
+                  max={60}
+                  step={1}
+                  value={edit.photoDuration}
+                  display={`${edit.photoDuration} seconds`}
+                  onChange={(value) => {
+                    change({ photoDuration: value });
+                    setTime(0);
+                  }}
+                />
+              </fieldset>
+            )}
           </section>
           <section className="controls-panel" aria-label="Editor controls">
             <input
@@ -1328,7 +1347,7 @@ export default function App() {
                       <RotateCcw size={13} />
                       Reset crop
                     </button>
-                    {media?.kind === "video" ? (
+                    {media?.kind === "video" && (
                       <div className="trim-section">
                         <span className="field-label">Trim video</span>
                         <div className="two-fields">
@@ -1410,21 +1429,6 @@ export default function App() {
                             change({
                               trimEnd: Math.max(v, edit.trimStart + 0.1),
                             });
-                            setTime(0);
-                          }}
-                        />
-                      </div>
-                    ) : (
-                      <div className="duration-section">
-                        <Slider
-                          label="Photo duration"
-                          min={1}
-                          max={60}
-                          step={1}
-                          value={edit.photoDuration}
-                          display={`${edit.photoDuration} seconds`}
-                          onChange={(value) => {
-                            change({ photoDuration: value });
                             setTime(0);
                           }}
                         />
